@@ -1,21 +1,21 @@
 // content.js — BugReplay content script
-// Injected into the target page on demand by background.js,
-// which first injects rrweb-lite.js so BugReplayRecorder is available.
+// Injected on demand. Survives page navigation by flushing events to
+// chrome.storage.session on beforeunload, then resuming on the new page.
 
 (() => {
   if (window.__bugReplayActive) return;
   window.__bugReplayActive = true;
 
   // ── STATE ──────────────────────────────────────────────────────────────────
-  let recording    = false;
-  let events       = [];       // semantic events (clicks, net, console, errors)
-  let rrwebEvents  = [];       // visual DOM events from BugReplayRecorder
-  let startTime    = null;
-  let rrwebStopFn  = null;
+  let recording   = false;
+  let events      = [];
+  let rrwebEvents = [];
+  let startTime   = null;
+  let rrwebStopFn = null;
 
-  const _XHROpen    = XMLHttpRequest.prototype.open;
-  const _XHRSend    = XMLHttpRequest.prototype.send;
-  const _fetch      = window.fetch;
+  const _XHROpen      = XMLHttpRequest.prototype.open;
+  const _XHRSend      = XMLHttpRequest.prototype.send;
+  const _fetch        = window.fetch;
   const _consoleLog   = console.log;
   const _consoleWarn  = console.warn;
   const _consoleError = console.error;
@@ -57,25 +57,48 @@
     }, 200);
   }
 
-  // ── START ──────────────────────────────────────────────────────────────────
-  function startRecording() {
-    if (recording) return;
-    recording   = true;
-    events      = [];
-    rrwebEvents = [];
-    startTime   = Date.now();
+  // ── FLUSH TO STORAGE (called on beforeunload) ──────────────────────────────
+  // Saves accumulated events to session storage so background can retrieve
+  // them if the content script dies before STOP is called.
+  function flushToStorage() {
+    if (!recording || !events.length) return;
+    try {
+      chrome.storage.session.set({
+        pendingEvents: events,
+        pendingRRwebEvents: rrwebEvents,
+        pendingStartTime: startTime,
+        pendingUrl: location.href,
+        pendingTitle: document.title
+      });
+    } catch (e) { /* storage unavailable during unload — best effort */ }
+  }
 
-    // ── Visual DOM recording via BugReplayRecorder (rrweb-lite) ──
+  // ── START ──────────────────────────────────────────────────────────────────
+  function startRecording(resumeState) {
+    if (recording) return;
+    recording = true;
+
+    if (resumeState) {
+      // Resuming after navigation — restore accumulated events
+      events      = resumeState.events      || [];
+      rrwebEvents = resumeState.rrwebEvents || [];
+      startTime   = resumeState.startTime   || Date.now();
+    } else {
+      events      = [];
+      rrwebEvents = [];
+      startTime   = Date.now();
+    }
+
+    // Visual DOM recording
     if (window.BugReplayRecorder) {
       rrwebStopFn = window.BugReplayRecorder.record({
         emit(event) {
-          // Stamp with our relative timestamp for sync with semantic events
           rrwebEvents.push({ ...event, br_t: now() });
         }
       });
     }
 
-    // ── Semantic layer: XHR ──
+    // XHR
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
       this.__brMethod = method;
       this.__brUrl    = url;
@@ -97,7 +120,7 @@
       return _XHRSend.call(this, body);
     };
 
-    // ── Semantic layer: fetch ──
+    // fetch
     window.fetch = function (resource, init = {}) {
       const method = ((init && init.method) || 'GET').toUpperCase();
       const url    = typeof resource === 'string' ? resource : resource.url;
@@ -105,9 +128,7 @@
       return _fetch.call(window, resource, init)
         .then(res => {
           push('net', {
-            method,
-            url: String(url).slice(0, 120),
-            status: res.status,
+            method, url: String(url).slice(0, 120), status: res.status,
             duration: now() - t0,
             desc: `${method} ${String(url).slice(0, 90)} → ${res.status}`
           });
@@ -115,16 +136,14 @@
         })
         .catch(err => {
           push('net', {
-            method,
-            url: String(url).slice(0, 120),
-            status: 0,
+            method, url: String(url).slice(0, 120), status: 0,
             desc: `${method} ${String(url).slice(0, 90)} → FAILED`
           });
           throw err;
         });
     };
 
-    // ── Semantic layer: console ──
+    // console
     console.log = (...args) => {
       _consoleLog.apply(console, args);
       push('log', { level: 'log', desc: args.map(String).join(' ').slice(0, 120) });
@@ -138,24 +157,33 @@
       push('err', { desc: args.map(String).join(' ').slice(0, 120) });
     };
 
-    // ── Semantic layer: JS errors ──
     window.addEventListener('error', onErrorCapture, true);
     window.addEventListener('unhandledrejection', onRejectionCapture, true);
+    document.addEventListener('click',   onClickCapture,  true);
+    document.addEventListener('input',   onInputCapture,  true);
+    document.addEventListener('change',  onChangeCapture, true);
+    document.addEventListener('keydown', onKeyCapture,    true);
 
-    // ── Semantic layer: clicks (for descriptions on top of rrweb visual) ──
-    document.addEventListener('click', onClickCapture, true);
+    // Flush events before page unloads (navigation/redirect)
+    window.addEventListener('beforeunload', onBeforeUnload);
 
-    // ── Semantic layer: inputs (for descriptions) ──
-    document.addEventListener('input', onInputCapture, true);
-    document.addEventListener('change', onChangeCapture, true);
+    // Add a navigation breadcrumb so the replay shows page changes
+    if (resumeState) {
+      push('nav', { url: location.href, desc: `navigated to ${location.href}` });
+    }
 
-    // ── Semantic layer: keyboard specials ──
-    document.addEventListener('keydown', onKeyCapture, true);
-
-    chrome.runtime.sendMessage({ action: 'RECORDING_STATUS', eventCount: 0, duration: 0 }).catch(() => {});
+    chrome.runtime.sendMessage({
+      action: 'RECORDING_STATUS',
+      eventCount: events.length,
+      duration: now()
+    }).catch(() => {});
   }
 
   // ── EVENT HANDLERS ─────────────────────────────────────────────────────────
+  function onBeforeUnload() {
+    flushToStorage();
+  }
+
   function onClickCapture(e) {
     push('click', {
       x: Math.round(e.clientX), y: Math.round(e.clientY),
@@ -165,22 +193,16 @@
   }
 
   function onInputCapture(e) {
-    const el    = e.target;
+    const el = e.target;
     if (!el || !el.tagName) return;
     const value = scrubValue(el, el.value || '');
-    push('input', {
-      target: selector(el), value,
-      desc: `${selector(el)} → "${value.slice(0, 40)}"`
-    });
+    push('input', { target: selector(el), value, desc: `${selector(el)} → "${value.slice(0, 40)}"` });
   }
 
   function onChangeCapture(e) {
     const el    = e.target;
     const value = scrubValue(el, el.value || '');
-    push('change', {
-      target: selector(el), value,
-      desc: `${selector(el)} changed → "${value.slice(0, 40)}"`
-    });
+    push('change', { target: selector(el), value, desc: `${selector(el)} changed → "${value.slice(0, 40)}"` });
   }
 
   function onKeyCapture(e) {
@@ -201,18 +223,13 @@
 
   function onErrorCapture(e) {
     push('err', {
-      message: e.message,
-      source: e.filename,
-      line: e.lineno,
+      message: e.message, source: e.filename, line: e.lineno,
       desc: `JS Error: ${e.message} @ ${(e.filename || '').split('/').pop()}:${e.lineno}`
     });
   }
 
   function onRejectionCapture(e) {
-    push('err', {
-      message: String(e.reason),
-      desc: `Unhandled rejection: ${String(e.reason).slice(0, 100)}`
-    });
+    push('err', { message: String(e.reason), desc: `Unhandled rejection: ${String(e.reason).slice(0, 100)}` });
   }
 
   // ── STOP ───────────────────────────────────────────────────────────────────
@@ -220,19 +237,17 @@
     if (!recording) return null;
     recording = false;
 
-    // Stop visual recorder
     if (rrwebStopFn) { try { rrwebStopFn(); } catch (e) {} rrwebStopFn = null; }
 
-    // Remove semantic listeners
     document.removeEventListener('click',   onClickCapture,   true);
     document.removeEventListener('input',   onInputCapture,   true);
     document.removeEventListener('change',  onChangeCapture,  true);
     document.removeEventListener('keydown', onKeyCapture,     true);
     document.removeEventListener('scroll',  onScrollCapture,  true);
-    window.removeEventListener('error',             onErrorCapture,    true);
-    window.removeEventListener('unhandledrejection',onRejectionCapture,true);
+    window.removeEventListener('error',              onErrorCapture,     true);
+    window.removeEventListener('unhandledrejection', onRejectionCapture, true);
+    window.removeEventListener('beforeunload',       onBeforeUnload);
 
-    // Restore globals
     XMLHttpRequest.prototype.open = _XHROpen;
     XMLHttpRequest.prototype.send = _XHRSend;
     window.fetch   = _fetch;
@@ -242,37 +257,44 @@
 
     window.__bugReplayActive = false;
 
-    const payload = {
-      version:    '1.1',
-      schema:     'bugreplay',
-      hasVisual:  rrwebEvents.length > 0,
+    // Clear pending storage — we have the full payload now
+    chrome.storage.session.remove([
+      'pendingEvents', 'pendingRRwebEvents', 'pendingStartTime',
+      'pendingUrl', 'pendingTitle'
+    ]).catch(() => {});
+
+    const payload = buildPayload();
+    chrome.runtime.sendMessage({ action: 'RECORDING_COMPLETE', data: payload }).catch(() => {});
+    return payload;
+  }
+
+  function buildPayload() {
+    return {
+      version:   '1.1',
+      schema:    'bugreplay',
+      hasVisual: rrwebEvents.length > 0,
       meta: {
         recordedAt:  new Date(startTime).toISOString(),
-        duration:    events.length || rrwebEvents.length
-                       ? Math.max(
-                           events.length  ? events[events.length - 1].t           : 0,
-                           rrwebEvents.length ? rrwebEvents[rrwebEvents.length-1].br_t : 0
-                         )
-                       : 0,
+        duration:    Math.max(
+          events.length      ? events[events.length - 1].t            : 0,
+          rrwebEvents.length ? rrwebEvents[rrwebEvents.length - 1].br_t : 0
+        ),
         eventCount:  events.length,
         rrwebCount:  rrwebEvents.length,
         url:         location.href,
         title:       document.title,
         userAgent:   navigator.userAgent,
-        viewport: { width: window.innerWidth, height: window.innerHeight }
+        viewport:    { width: window.innerWidth, height: window.innerHeight }
       },
       events,
-      rrwebEvents   // full visual stream; may be [] if BugReplayRecorder unavailable
+      rrwebEvents
     };
-
-    chrome.runtime.sendMessage({ action: 'RECORDING_COMPLETE', data: payload }).catch(() => {});
-    return payload;
   }
 
   // ── MESSAGE LISTENER ───────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === 'START_RECORDING') {
-      startRecording();
+      startRecording(msg.resumeState || null);
       sendResponse({ ok: true });
       return false;
     }

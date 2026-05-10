@@ -167,16 +167,33 @@ function startRecording() {
 }
 
 function stopRecording() {
+  // Disable button immediately so user knows the click registered
+  const btn = document.getElementById('btn-stop');
+  if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+
   chrome.runtime.sendMessage({ action: 'STOP_RECORDING' }, (res) => {
-    if (chrome.runtime.lastError || !res || !res.ok) {
-      showError('Failed to stop recording. Try refreshing the page.');
+    if (btn) { btn.disabled = false; btn.textContent = '⏹ STOP & EXPORT'; }
+
+    if (chrome.runtime.lastError) {
+      showError('Could not reach the page. Was it closed?');
       return;
     }
-    // RECORDING_COMPLETE message will trigger transitionToDone,
-    // but use a fallback in case the popup missed it
-    setTimeout(() => {
-      if (state === 'recording') transitionToDone(res.eventCount || 0);
-    }, 2000);
+
+    if (res && res.ok) {
+      // recovered: true means background recovered events from storage after navigation
+      if (res.recovered) {
+        transitionToDone(res.eventCount || 0);
+      } else {
+        // Normal stop — RECORDING_COMPLETE message will call transitionToDone,
+        // but fall back after 2s in case the popup missed the message
+        setTimeout(() => {
+          if (state === 'recording') transitionToDone(res.eventCount || 0);
+        }, 2000);
+      }
+      return;
+    }
+
+    showError((res && res.error) || 'Failed to stop recording.');
   });
 }
 

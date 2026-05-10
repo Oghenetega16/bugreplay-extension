@@ -8,7 +8,8 @@
     "activeTab",
     "scripting",
     "storage",
-    "downloads"
+    "downloads",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>"
