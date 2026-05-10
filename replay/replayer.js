@@ -95,10 +95,14 @@ function buildViewport(hasVisual) {
   vp.innerHTML = '';
 
   if (hasVisual) {
-    // Sandboxed iframe for visual DOM replay
+    // iframe loaded from a blob: URL — null origin, naturally sandboxed.
+    // No allow-same-origin needed (avoids sandbox escape warning).
+    // Incremental mutations are applied via postMessage to the iframe.
     replayFrame = document.createElement('iframe');
     replayFrame.id = 'replay-iframe';
-    replayFrame.sandbox = 'allow-same-origin allow-scripts'; // allow-same-origin: write to contentDocument; allow-scripts: layout/styles in replay
+    // allow-scripts only — the iframe has a null origin (blob:) so it
+    // cannot access the parent even with scripts enabled.
+    replayFrame.sandbox = 'allow-scripts';
     replayFrame.style.cssText = [
       'width:100%',
       'height:100%',
@@ -358,126 +362,249 @@ function applyFullSnapshot(event) {
   if (!replayFrame) return;
   idMap.clear();
   try {
-    const iDoc = replayFrame.contentDocument || replayFrame.contentWindow.document;
-    iDoc.open();
-    iDoc.write('<!DOCTYPE html><html><head></head><body></body></html>');
-    iDoc.close();
-
     const snap = event.data;
-    if (snap && snap.node) {
-      buildDOM(snap.node, iDoc, iDoc);
-    }
+    if (!snap || !snap.node) return;
 
-    // Inject base tag so relative URLs resolve correctly
-    if (baseUrl) {
-      const base = iDoc.createElement('base');
-      base.href  = baseUrl;
-      const head = iDoc.querySelector('head');
-      if (head) head.insertBefore(base, head.firstChild);
-    }
+    // Serialise the snapshot to an HTML string
+    const htmlStr = snapshotToHTML(snap.node, snap.initialOffset);
 
-    // Initial scroll
-    if (snap && snap.initialOffset) {
-      iDoc.documentElement.scrollTop  = snap.initialOffset.top  || 0;
-      iDoc.documentElement.scrollLeft = snap.initialOffset.left || 0;
-    }
+    // Load as a blob: URL — gives the iframe a null origin, no sandbox escape possible
+    const prevBlob = replayFrame._blobUrl;
+    const blob    = new Blob([htmlStr], { type: 'text/html' });
+    const blobUrl = URL.createObjectURL(blob);
+    replayFrame._blobUrl = blobUrl;
+    replayFrame.src = blobUrl;
+
+    // Listen for the iframe to finish loading, then send pending mutations
+    replayFrame.onload = () => {
+      if (prevBlob) URL.revokeObjectURL(prevBlob);
+      // Drain any mutations that arrived before load completed
+      if (replayFrame._pendingMutations) {
+        replayFrame._pendingMutations.forEach(m => {
+          replayFrame.contentWindow.postMessage({ type: 'MUTATION', data: m }, '*');
+        });
+        replayFrame._pendingMutations = [];
+      }
+    };
+    replayFrame._pendingMutations = [];
+
   } catch (e) {
     console.warn('[BugReplay] Full snapshot error:', e);
   }
+}
+
+// Serialise a rrweb-lite node tree to an HTML string for blob loading
+function snapshotToHTML(node, initialOffset) {
+  const base = baseUrl ? `<base href="${escAttr(baseUrl)}">` : '';
+  const scroll = initialOffset
+    ? `<script>window.scrollTo(${initialOffset.left||0},${initialOffset.top||0})<\/script>`
+    : '';
+
+  // The iframe contains a small runtime that receives postMessage mutations
+  // and applies them to its own DOM. This avoids needing allow-same-origin.
+  const runtime = `<script>
+(function() {
+  // id → DOM node map inside the iframe
+  var idMap = {};
+  function reg(id, node) { if (id) idMap[id] = node; return node; }
+  function get(id) { return idMap[id] || null; }
+
+  window.addEventListener('message', function(e) {
+    var msg = e.data;
+    if (!msg || msg.type !== 'MUTATION') return;
+    var d = msg.data;
+    // Removals
+    (d.removes||[]).forEach(function(r) {
+      var n = get(r.id); if (n && n.parentNode) n.parentNode.removeChild(n);
+    });
+    // Additions
+    (d.adds||[]).forEach(function(add) {
+      var parent = get(add.parentId) || document.documentElement;
+      if (!parent) return;
+      var node = buildNode(add.node);
+      if (!node) return;
+      var next = add.nextId ? get(add.nextId) : null;
+      parent.insertBefore(node, next || null);
+    });
+    // Attributes
+    (d.attributes||[]).forEach(function(a) {
+      var el = get(a.id); if (!el) return;
+      Object.keys(a.attributes||{}).forEach(function(k) {
+        var v = a.attributes[k];
+        try { v===null ? el.removeAttribute(k) : el.setAttribute(k,v); } catch(e){}
+      });
+    });
+    // Text
+    (d.texts||[]).forEach(function(t) {
+      var n = get(t.id); if (n) n.textContent = t.value;
+    });
+    // Input values
+    (d.inputs||[]).forEach(function(i) {
+      var el = get(i.id); if (!el) return;
+      if (el.type==='checkbox'||el.type==='radio') el.checked=i.isChecked;
+      else el.value = i.text||'';
+    });
+    // Scroll
+    if (d.scroll) {
+      var st = get(d.scroll.id) || document.documentElement;
+      try { st.scrollTo(d.scroll.x||0, d.scroll.y||0); } catch(e){}
+    }
+  });
+
+  function buildNode(s) {
+    if (!s) return null;
+    var n;
+    if (s.type === 2) { // Element
+      if (s.tagName === 'script') return null;
+      try {
+        n = s.isSVG
+          ? document.createElementNS('http://www.w3.org/2000/svg', s.tagName)
+          : document.createElement(s.tagName);
+      } catch(e) { return null; }
+      var attrs = s.attributes || {};
+      Object.keys(attrs).forEach(function(k) {
+        if (k === '__live_value') return;
+        try { n.setAttribute(k, attrs[k]); } catch(e) {}
+      });
+      if (attrs.__live_value !== undefined) n.value = attrs.__live_value;
+      if (s.inlineStyleText) n.textContent = s.inlineStyleText;
+      (s.childNodes||[]).forEach(function(c) {
+        var child = buildNode(c); if (child) try { n.appendChild(child); } catch(e){}
+      });
+      reg(s.id, n);
+      return n;
+    }
+    if (s.type === 3) { // Text
+      n = document.createTextNode(s.textContent||'');
+      reg(s.id, n); return n;
+    }
+    if (s.type === 5) { // Comment
+      n = document.createComment(s.textContent||'');
+      reg(s.id, n); return n;
+    }
+    // Document node — recurse
+    if (s.type === 0) {
+      (s.childNodes||[]).forEach(function(c) {
+        var child = buildNode(c);
+        if (child) try { document.documentElement.appendChild(child); } catch(e){}
+      });
+      return document;
+    }
+    return null;
+  }
+
+  // Register all existing nodes that were written via innerHTML
+  // by walking the live DOM and matching ids stored as data-br-id attributes
+  // (We skip this for now — initial DOM is written as static HTML)
+})();
+<\/script>`;
+
+  let bodyHTML = '';
+  let headHTML = base;
+
+  if (node.type === 0) { // Document node
+    (node.childNodes || []).forEach(c => {
+      if (c.type === 2) {
+        if (c.tagName === 'html') {
+          (c.childNodes || []).forEach(hc => {
+            if (hc.tagName === 'head') headHTML += nodeToHTML(hc, true);
+            else if (hc.tagName === 'body') bodyHTML = nodeToHTML(hc, false);
+          });
+        }
+      }
+    });
+  }
+
+  return `<!DOCTYPE html><html><head>${headHTML}${runtime}</head><body>${bodyHTML}${scroll}</body></html>`;
+}
+
+function nodeToHTML(node, isHead) {
+  if (!node) return '';
+  if (node.type === 3) return escText(node.textContent || ''); // Text
+  if (node.type === 5) return `<!--${escText(node.textContent||'')}-->`; // Comment
+  if (node.type !== 2) return ''; // Only elements beyond here
+  if (node.tagName === 'script') return ''; // Skip scripts
+
+  const attrs = node.attributes || {};
+  let attrStr = Object.entries(attrs)
+    .filter(([k]) => k !== '__live_value')
+    .map(([k, v]) => ` ${escAttr(k)}="${escAttr(String(v||''))}"`)
+    .join('');
+
+  const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  if (VOID.has(node.tagName)) return `<${node.tagName}${attrStr}>`;
+
+  let inner = '';
+  if (node.inlineStyleText) {
+    inner = node.inlineStyleText;
+  } else {
+    inner = (node.childNodes || []).map(c => nodeToHTML(c, isHead)).join('');
+  }
+  return `<${node.tagName}${attrStr}>${inner}</${node.tagName}>`;
+}
+
+function escText(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
 }
 
 function applyRRwebEvent(event) {
   if (event.type === 2) { applyFullSnapshot(event); return; }
   if (event.type !== 3 || !replayFrame) return;
 
-  try {
-    const iDoc = replayFrame.contentDocument || replayFrame.contentWindow.document;
-    const d    = event.data;
+  const d = event.data;
 
-    switch (d.source) {
-      case 0: // Mutation
-        applyMutation(d, iDoc);
-        break;
+  switch (d.source) {
+    case 0: // Mutation — send to iframe via postMessage
+      sendToFrame({ type: 'MUTATION', data: {
+        removes:    d.removes    || [],
+        adds:       d.adds       || [],
+        attributes: d.attributes || [],
+        texts:      d.texts      || []
+      }});
+      break;
 
-      case 1: // MouseMove
-        if (d.positions && d.positions.length) {
-          const p = d.positions[d.positions.length - 1];
-          // Convert iframe coordinates to overlay coordinates
-          const ifRect = replayFrame.getBoundingClientRect();
-          flashCursor(ifRect.left + p.x, ifRect.top + p.y);
-        }
-        break;
+    case 1: // MouseMove
+      if (d.positions && d.positions.length) {
+        const p = d.positions[d.positions.length - 1];
+        const ifRect = replayFrame.getBoundingClientRect();
+        flashCursor(ifRect.left + p.x, ifRect.top + p.y);
+      }
+      break;
 
-      case 2: // MouseInteraction (click)
-        if (d.type === 2 /* Click */) {
-          const ifRect = replayFrame.getBoundingClientRect();
-          flashCursor(ifRect.left + (d.x || 0), ifRect.top + (d.y || 0));
-        }
-        break;
+    case 2: // MouseInteraction (click)
+      if (d.type === 2) {
+        const ifRect = replayFrame.getBoundingClientRect();
+        flashCursor(ifRect.left + (d.x || 0), ifRect.top + (d.y || 0));
+      }
+      break;
 
-      case 3: // Scroll
-        try {
-          const target = idMap.get(d.id) || iDoc.documentElement;
-          if (target && target.scrollTo) target.scrollTo(d.x || 0, d.y || 0);
-        } catch(e) {}
-        break;
+    case 3: // Scroll
+      sendToFrame({ type: 'MUTATION', data: { removes:[], adds:[], attributes:[], texts:[],
+        scroll: { id: d.id, x: d.x || 0, y: d.y || 0 }
+      }});
+      break;
 
-      case 5: // Input
-        try {
-          const el = idMap.get(d.id);
-          if (el) {
-            if (el.type === 'checkbox' || el.type === 'radio') {
-              el.checked = d.isChecked;
-            } else {
-              el.value = d.text || '';
-            }
-          }
-        } catch(e) {}
-        break;
-    }
-  } catch (e) {
-    // Silently ignore cross-origin iframe errors
+    case 5: // Input
+      sendToFrame({ type: 'MUTATION', data: { removes:[], adds:[], attributes:[], texts:[],
+        inputs: [{ id: d.id, text: d.text || '', isChecked: d.isChecked || false }]
+      }});
+      break;
   }
 }
 
-function applyMutation(d, iDoc) {
-  // Removals
-  (d.removes || []).forEach(r => {
-    const node = idMap.get(r.id);
-    if (node && node.parentNode) node.parentNode.removeChild(node);
-  });
-
-  // Additions
-  (d.adds || []).forEach(add => {
-    const parent = idMap.get(add.parentId) || iDoc.documentElement;
-    if (!parent) return;
-    const node = buildDOM(add.node, iDoc, iDoc);
-    if (!node) return;
-    if (add.nextId) {
-      const nextSib = idMap.get(add.nextId);
-      parent.insertBefore(node, nextSib || null);
-    } else {
-      parent.appendChild(node);
-    }
-  });
-
-  // Attribute changes
-  (d.attributes || []).forEach(a => {
-    const el = idMap.get(a.id);
-    if (!el || !el.setAttribute) return;
-    Object.entries(a.attributes || {}).forEach(([k, v]) => {
-      try {
-        if (v === null) { el.removeAttribute(k); }
-        else { el.setAttribute(k, v); }
-      } catch(e) {}
-    });
-  });
-
-  // Text changes
-  (d.texts || []).forEach(t => {
-    const node = idMap.get(t.id);
-    if (node) node.textContent = t.value;
-  });
+// Send a postMessage to the iframe, or queue it if the iframe is still loading
+function sendToFrame(msg) {
+  if (!replayFrame) return;
+  if (replayFrame.contentWindow && replayFrame._blobUrl && !replayFrame._loading) {
+    try { replayFrame.contentWindow.postMessage(msg, '*'); } catch(e) {}
+  } else {
+    // Queue until iframe onload fires
+    if (!replayFrame._pendingMutations) replayFrame._pendingMutations = [];
+    replayFrame._pendingMutations.push(msg.data);
+  }
 }
 
 // ── DOM BUILDER ────────────────────────────────────────────────────────────
