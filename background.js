@@ -1,10 +1,27 @@
 // background.js — BugReplay service worker
-// Injects rrweb-lite.js THEN content.js so BugReplayRecorder is available
-// when content.js runs.
+// Injects rrweb-lite.js THEN content.js so BugReplayRecorder is available.
+//
+// IMPORTANT: MV3 service workers are terminated when idle and restarted on
+// the next event. Any in-memory state is lost. We persist recordingTabId to
+// chrome.storage.session (cleared on browser restart, survives SW restarts)
+// so STOP always reaches the right tab.
 
 'use strict';
 
-let recordingTabId = null;
+// Always read recordingTabId from storage — never trust the in-memory value
+// across SW restarts.
+async function getRecordingTabId() {
+  const res = await chrome.storage.session.get('recordingTabId');
+  return res.recordingTabId || null;
+}
+
+async function setRecordingTabId(id) {
+  if (id === null) {
+    await chrome.storage.session.remove('recordingTabId');
+  } else {
+    await chrome.storage.session.set({ recordingTabId: id });
+  }
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
@@ -14,7 +31,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const tab = tabs[0];
       if (!tab) return sendResponse({ ok: false, error: 'No active tab' });
 
-      recordingTabId = tab.id;
+      await setRecordingTabId(tab.id);
 
       try {
         // 1. Inject the visual recorder (rrweb-lite) first
@@ -41,7 +58,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }, 150);
 
       } catch (e) {
-        recordingTabId = null;
+        await setRecordingTabId(null);
         sendResponse({ ok: false, error: e.message });
       }
     });
@@ -50,13 +67,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // ── STOP ─────────────────────────────────────────────────────────────────
   if (msg.action === 'STOP_RECORDING') {
-    if (!recordingTabId) return sendResponse({ ok: false, error: 'Not recording' });
-    chrome.tabs.sendMessage(recordingTabId, { action: 'STOP_RECORDING' }, (r) => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
-      } else {
-        sendResponse(r || { ok: false });
-      }
+    getRecordingTabId().then(tabId => {
+      if (!tabId) return sendResponse({ ok: false, error: 'Not recording' });
+      chrome.tabs.sendMessage(tabId, { action: 'STOP_RECORDING' }, (r) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          sendResponse(r || { ok: false });
+        }
+      });
     });
     return true;
   }
@@ -70,7 +89,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // ── COMPLETE: encode + download ──────────────────────────────────────────
   if (msg.action === 'RECORDING_COMPLETE') {
     const payload = msg.data;
-    recordingTabId = null;
+    setRecordingTabId(null);
 
     chrome.storage.local.set({ lastRecording: payload, recordingState: 'done' });
 
@@ -110,8 +129,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Clean up on tab close
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === recordingTabId) {
-    recordingTabId = null;
+  getRecordingTabId().then(recTabId => {
+    if (tabId !== recTabId) return;
+    setRecordingTabId(null);
     chrome.storage.local.set({ recordingState: 'idle' });
-  }
+  });
 });

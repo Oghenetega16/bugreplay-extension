@@ -5,17 +5,16 @@
 
 let state = 'idle'; // idle | recording | done
 let timerInterval = null;
-let startTime = null;
+let startTime = null; // set from chrome.storage on reopen, not from Date.now()
 
 // ─────────────────────────────────────────────
 // INIT
 // ─────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadPageInfo();
-  checkExistingRecording();
+  checkExistingRecording(); // reads storage FIRST, then binds buttons
   bindButtons();
 
-  // Listen for live updates from content script (relayed via background)
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === 'RECORDING_STATUS') {
       updateLiveStats(msg.eventCount);
@@ -47,9 +46,18 @@ function loadPageInfo() {
 }
 
 function checkExistingRecording() {
-  chrome.storage.local.get(['recordingState'], (res) => {
+  // Read both state AND the recorded start time so the timer is accurate on reopen
+  chrome.storage.local.get(['recordingState', 'recordingStartTime', 'recordingEventCount'], (res) => {
     if (res.recordingState === 'recording') {
-      transitionToRecording(false);
+      // Restore wall-clock start so timer shows correct elapsed time
+      startTime = res.recordingStartTime || Date.now();
+      transitionToRecording(false, res.recordingEventCount || 0);
+    } else if (res.recordingState === 'done') {
+      // Show done state if popup was closed before user saw it
+      chrome.storage.local.get(['lastRecording'], (r) => {
+        const count = r.lastRecording && r.lastRecording.meta && r.lastRecording.meta.eventCount || 0;
+        transitionToDone(count);
+      });
     }
   });
 }
@@ -57,24 +65,33 @@ function checkExistingRecording() {
 // ─────────────────────────────────────────────
 // STATE TRANSITIONS
 // ─────────────────────────────────────────────
-function transitionToRecording(sendStart) {
+function transitionToRecording(sendStart, restoredEventCount) {
   state = 'recording';
-  startTime = Date.now();
+  // Only set startTime if not already restored from storage
+  if (!startTime) startTime = Date.now();
 
   document.getElementById('main-idle').classList.add('hidden');
   document.getElementById('main-done').classList.add('hidden');
   document.getElementById('main-recording').classList.remove('hidden');
 
   document.getElementById('logo-icon').classList.add('recording');
-  document.getElementById('logo-icon').textContent = '\u23FA'; // ⏺
+  document.getElementById('logo-icon').textContent = '\u23FA';
   document.getElementById('status-pill').textContent = 'REC';
   document.getElementById('status-pill').className = 'status-pill recording';
 
   const feed = document.getElementById('event-feed');
   feed.innerHTML = '<div class="feed-empty">Listening for events\u2026</div>';
 
+  // Restore event count display if reopening mid-session
+  if (restoredEventCount) {
+    const el = document.getElementById('stat-events');
+    if (el) el.textContent = restoredEventCount;
+  }
+
+  // Start (or resume) the timer — reads from startTime which may be from storage
+  clearInterval(timerInterval);
   timerInterval = setInterval(() => {
-    const s = Math.floor((Date.now() - startTime) / 1000);
+    const s  = Math.floor((Date.now() - startTime) / 1000);
     const mm = Math.floor(s / 60);
     const ss = String(s % 60).padStart(2, '0');
     const el = document.getElementById('stat-time');
@@ -82,7 +99,12 @@ function transitionToRecording(sendStart) {
   }, 500);
 
   if (sendStart) {
-    chrome.storage.local.set({ recordingState: 'recording' });
+    // Persist start time so it survives popup close
+    chrome.storage.local.set({
+      recordingState: 'recording',
+      recordingStartTime: startTime,
+      recordingEventCount: 0
+    });
     chrome.runtime.sendMessage({ action: 'START_RECORDING' }, (res) => {
       if (chrome.runtime.lastError || !res || !res.ok) {
         const err = (chrome.runtime.lastError && chrome.runtime.lastError.message) ||
@@ -96,8 +118,10 @@ function transitionToRecording(sendStart) {
 
 function transitionToIdle() {
   state = 'idle';
+  startTime = null;
   clearInterval(timerInterval);
   chrome.storage.local.set({ recordingState: 'idle' });
+  chrome.storage.local.remove(['recordingStartTime', 'recordingEventCount']);
 
   document.getElementById('main-recording').classList.add('hidden');
   document.getElementById('main-done').classList.add('hidden');
@@ -115,8 +139,10 @@ function transitionToIdle() {
 
 function transitionToDone(eventCount) {
   state = 'done';
+  startTime = null;
   clearInterval(timerInterval);
   chrome.storage.local.set({ recordingState: 'done' });
+  chrome.storage.local.remove(['recordingStartTime', 'recordingEventCount']);
 
   document.getElementById('main-recording').classList.add('hidden');
   document.getElementById('main-idle').classList.add('hidden');
@@ -170,6 +196,8 @@ function openReplayer() {
 function updateLiveStats(eventCount) {
   const el = document.getElementById('stat-events');
   if (el) el.textContent = eventCount;
+  // Keep storage in sync so count is correct if popup is closed and reopened
+  chrome.storage.local.set({ recordingEventCount: eventCount });
 }
 
 // ─────────────────────────────────────────────
