@@ -98,7 +98,7 @@ function buildViewport(hasVisual) {
     // Sandboxed iframe for visual DOM replay
     replayFrame = document.createElement('iframe');
     replayFrame.id = 'replay-iframe';
-    replayFrame.sandbox = 'allow-same-origin'; // needed to write to contentDocument
+    replayFrame.sandbox = 'allow-same-origin allow-scripts'; // allow-same-origin: write to contentDocument; allow-scripts: layout/styles in replay
     replayFrame.style.cssText = [
       'width:100%',
       'height:100%',
