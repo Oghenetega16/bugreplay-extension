@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- CSP: no inline scripts, no external resources -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:;">
+<title>BugReplay</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon" id="logo-icon">&#9210;</div>
+      <div>
+        <div class="logo-name">Bug<span>Replay</span></div>
+        <div class="logo-sub">P2P &middot; NO CLOUD</div>
+      </div>
+    </div>
+    <div class="status-pill" id="status-pill">IDLE</div>
+  </div>
+
+  <!-- Idle state -->
+  <div class="main" id="main-idle">
+    <div class="page-info" id="page-info">
+      <div class="page-title" id="page-title">&mdash;</div>
+      <div class="page-url" id="page-url">&mdash;</div>
+    </div>
+    <button class="btn-record" id="btn-start">
+      <span class="btn-dot"></span>
+      START RECORDING
+    </button>
+    <div class="hint">Captures clicks, inputs, network, console &amp; DOM mutations</div>
+  </div>
+
+  <!-- Recording state -->
+  <div class="main hidden" id="main-recording">
+    <div class="rec-stats">
+      <div class="stat">
+        <div class="stat-num" id="stat-events">0</div>
+        <div class="stat-label">EVENTS</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="stat-time">0:00</div>
+        <div class="stat-label">DURATION</div>
+      </div>
+    </div>
+    <div class="event-feed" id="event-feed">
+      <div class="feed-empty">Listening for events&hellip;</div>
+    </div>
+    <button class="btn-stop" id="btn-stop">
+      &#9209; STOP &amp; EXPORT
+    </button>
+  </div>
+
+  <!-- Done state -->
+  <div class="main hidden" id="main-done">
+    <div class="done-icon">&#10003;</div>
+    <div class="done-title">Recording exported!</div>
+    <div class="done-sub" id="done-sub">&mdash; events captured</div>
+    <div class="done-actions">
+      <button class="btn-secondary" id="btn-open-replayer">&#9654; Open Replayer</button>
+      <button class="btn-secondary" id="btn-new-recording">&#9210; New Recording</button>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <span class="footer-link" id="footer-replayer-link">&#9654; Open Replayer</span>
+    <span class="footer-ver">v1.0.0</span>
+  </div>
+
+</div>
+<script src="popup.js"></script>
+</body>
+</html>
