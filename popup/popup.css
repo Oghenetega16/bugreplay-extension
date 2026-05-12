@@ -49,6 +49,16 @@ body {
   flex-shrink: 0;
   color: #000;
   font-weight: bold;
+  overflow: hidden;
+  position: relative;
+}
+
+.logo-icon img {
+  width: 22px;
+  height: 22px;
+  display: block;
+  border-radius: 3px;
+  transition: opacity 0.2s;
 }
 
 .logo-icon.recording {
@@ -360,4 +370,37 @@ body {
   font-size: 9px;
   color: var(--border);
   letter-spacing: 0.06em;
+}
+
+/* ── Logo state classes (replaces runtime inline styles) ── */
+#logo-img {
+  display: block;
+  border-radius: 3px;
+  opacity: 1;
+  transition: opacity 0.2s;
+}
+
+.logo-img-hidden {
+  opacity: 0 !important;
+}
+
+.logo-icon-done {
+  background: var(--accent2) !important;
+  position: relative;
+}
+
+.logo-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 16px;
+  color: #000;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* Error state for hint text */
+.hint-error {
+  color: var(--danger) !important;
 }

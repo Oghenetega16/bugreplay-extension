@@ -61,12 +61,20 @@ body::before {
 
 .logo-sq {
   width: 36px; height: 36px;
-  background: var(--accent2);
+  background: var(--accent);
   border-radius: 7px;
   display: flex; align-items: center; justify-content: center;
   font-size: 18px;
   color: #000;
   font-weight: bold;
+  overflow: hidden;
+}
+
+.logo-sq img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 3px;
 }
 
 .logo-name { font-family: var(--mono); font-size: 15px; font-weight: 600; }
@@ -340,6 +348,101 @@ body::before {
   font-size: 9px;
   letter-spacing: 0.08em;
 }
+
+/* ── Classes replacing inline styles ── */
+.hidden { display: none !important; }
+
+.logo-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 3px;
+}
+
+.logo-sub-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.mode-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.mode-visual { color: var(--accent2); }
+.mode-log    { color: var(--muted); }
+
+.session-url {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-empty {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.card-mt { margin-top: 16px; }
+
+.how-to-list {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.9;
+}
+
+.how-to-item {
+  color: var(--text);
+  margin-bottom: 4px;
+  display: block;
+}
+
+.how-to-note {
+  display: block;
+  margin-top: 8px;
+}
+
+/* iframe and cursor inside viewport */
+.replay-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+  border-radius: 4px;
+  display: block;
+}
+
+.replay-cursor {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(232,255,71,0.4);
+  border: 2px solid #e8ff47;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  z-index: 100;
+  transition: left 0.05s linear, top 0.05s linear;
+}
+
+.vp-relative { position: relative; }
+
+.replay-log-inner {
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
 </style>
 </head>
 <body>
@@ -347,9 +450,11 @@ body::before {
 <div class="wrap">
   <div class="hdr">
     <div class="logo-row">
-      <div class="logo-sq">&#9654;</div>
+      <div class="logo-sq">
+        <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAABDElEQVR4nO2aMQ6DMBRDHdStF2DuObr3zOw9R+deoDNMkUIEXyL+NP+TvKlqimPHNEJAgMB3fs3S+L8YwxT2xjYHrBjP2Qqy+sKq8Zw0yBA/eDEPrL0O0g89MAC+Vj8SPbtvIHhc/RT3DfQAtXEf4HaG6OP+3h37/J6qc6nuQpLxHK0gKgGOGM9hg9D/Aca8xvFUAHZyDZ3iAFrmWT3322hRAO3VZ3Tba+Cs1S/Vb68Ba/QAtekBanM4gPb1PKvfXgPAeS2U6LbZAKDfQqke1YBWCEaHPoXYEOzx/a7EFm7vC9Wg3W3UCv4DSA+RrTOGKfhvAJAf5Vsler5GA4CvFlKv13rZI8dKEOnsWAA5J2YMBK/o+QAAAABJRU5ErkJggg==" alt="BugReplay" width="24" height="24" class="logo-img">
+      </div>
       <div>
-        <div class="logo-name">Bug<em>Replay</em> <span style="color:var(--muted);font-size:12px;font-weight:400">&mdash; Replayer</span></div>
+        <div class="logo-name">Bug<em>Replay</em> <span class="logo-sub-label">&mdash; Replayer</span></div>
         <div class="logo-sub">LOAD A .REPLAY FILE TO BEGIN</div>
       </div>
     </div>
@@ -367,11 +472,11 @@ body::before {
         <input type="file" id="file-input" class="dz-input" accept=".replay,.json">
       </div>
 
-      <div class="card" id="player-card" style="display:none">
+      <div class="card hidden" id="player-card">
         <div class="card-hdr">
           <span class="card-label" id="session-title">// Session</span>
-          <span id="mode-badge" style="font-family:var(--mono);font-size:9px;letter-spacing:0.08em;color:var(--muted)"></span>
-          <span class="card-label" id="session-url" style="color:var(--text);font-size:9px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+          <span id="mode-badge" class="mode-badge"></span>
+          <span class="session-url" id="session-url"></span>
         </div>
         <div class="card-body">
           <div class="viewport" id="viewport">
@@ -410,20 +515,19 @@ body::before {
       <div class="card">
         <div class="card-hdr"><span class="card-label">// Metadata</span></div>
         <div class="card-body" id="meta-body">
-          <div style="font-family:var(--mono);font-size:10px;color:var(--muted)">Load a .replay file to see session metadata</div>
+          <div class="meta-empty">Load a .replay file to see session metadata</div>
         </div>
       </div>
 
-      <div class="card" style="margin-top:16px;">
+      <div class="card card-mt">
         <div class="card-hdr"><span class="card-label">// How to share</span></div>
         <div class="card-body">
-          <div style="font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.9">
-            <div style="color:var(--text);margin-bottom:4px">&#9312; Record a bug with the extension</div>
-            <div style="color:var(--text);margin-bottom:4px">&#9313; .replay file auto-downloads</div>
-            <div style="color:var(--text);margin-bottom:4px">&#9314; Attach to GitHub issue / Slack</div>
-            <div style="color:var(--text)">&#9315; Teammate opens this page</div>
-            <br>
-            <div>No server. No login. Just a file.</div>
+          <div class="how-to-list">
+            <div class="how-to-item">&#9312; Record a bug with the extension</div>
+            <div class="how-to-item">&#9313; .replay file auto-downloads</div>
+            <div class="how-to-item">&#9314; Attach to GitHub issue / Slack</div>
+            <div class="how-to-item">&#9315; Teammate opens this page</div>
+            <div class="how-to-note">No server. No login. Just a file.</div>
           </div>
         </div>
       </div>

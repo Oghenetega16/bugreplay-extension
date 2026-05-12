@@ -67,8 +67,8 @@ function loadFile(file) {
 }
 
 function showPlayer() {
-  document.getElementById('drop-zone').style.display = 'none';
-  document.getElementById('player-card').style.display = 'block';
+  document.getElementById('drop-zone').classList.add('hidden');
+  document.getElementById('player-card').classList.remove('hidden');
 
   const m = data.meta || {};
   document.getElementById('session-title').textContent = '// ' + (m.title || 'Session');
@@ -81,8 +81,8 @@ function showPlayer() {
   const hasVisual = data.hasVisual && data.rrwebEvents && data.rrwebEvents.length > 0;
   const modeBadge = document.getElementById('mode-badge');
   if (modeBadge) {
-    modeBadge.textContent    = hasVisual ? '● VISUAL MODE' : '● LOG MODE';
-    modeBadge.style.color    = hasVisual ? 'var(--accent2)' : 'var(--muted)';
+    modeBadge.textContent = hasVisual ? '● VISUAL MODE' : '● LOG MODE';
+    modeBadge.className   = 'mode-badge ' + (hasVisual ? 'mode-visual' : 'mode-log');
   }
 
   // Build replay viewport
@@ -103,45 +103,19 @@ function buildViewport(hasVisual) {
     // allow-scripts only — the iframe has a null origin (blob:) so it
     // cannot access the parent even with scripts enabled.
     replayFrame.sandbox = 'allow-scripts';
-    replayFrame.style.cssText = [
-      'width:100%',
-      'height:100%',
-      'border:none',
-      'background:#fff',
-      'border-radius:4px',
-      'display:block'
-    ].join(';');
+    replayFrame.className = 'replay-iframe';
     vp.appendChild(replayFrame);
 
     // Cursor overlay
     const cursor = document.createElement('div');
     cursor.id = 'replay-cursor';
-    cursor.style.cssText = [
-      'position:absolute',
-      'width:18px',
-      'height:18px',
-      'border-radius:50%',
-      'background:rgba(232,255,71,0.4)',
-      'border:2px solid #e8ff47',
-      'pointer-events:none',
-      'transform:translate(-50%,-50%)',
-      'display:none',
-      'z-index:100',
-      'transition:left 0.05s linear,top 0.05s linear'
-    ].join(';');
-    vp.style.position = 'relative';
+    cursor.className = 'replay-cursor';
+    vp.classList.add('vp-relative');
     vp.appendChild(cursor);
   } else {
     // Log mode: plain event stream div
     const log = document.createElement('div');
     log.id = 'replay-log';
-    log.style.cssText = [
-      'height:100%',
-      'overflow-y:auto',
-      'padding:12px',
-      'font-family:var(--mono)',
-      'font-size:11px'
-    ].join(';');
     log.innerHTML = '<div class="vp-empty">Press PLAY to begin replay</div>';
     vp.appendChild(log);
   }
@@ -241,7 +215,7 @@ function reset() {
   if (data) renderEventsList();
 
   const cursor = document.getElementById('replay-cursor');
-  if (cursor) cursor.style.display = 'none';
+  if (cursor) cursor.classList.add('hidden');
 }
 
 // Main tick — advances both streams in timestamp order
@@ -347,10 +321,10 @@ function appendToLog(ev) {
 function flashCursor(x, y) {
   const cursor = document.getElementById('replay-cursor');
   if (!cursor) return;
-  cursor.style.display = 'block';
-  cursor.style.left    = x + 'px';
-  cursor.style.top     = y + 'px';
-  setTimeout(() => { if (cursor) cursor.style.display = 'none'; }, 500);
+  cursor.classList.remove('hidden');
+  cursor.style.left = x + 'px';
+  cursor.style.top  = y + 'px';
+  setTimeout(() => { if (cursor) cursor.classList.add('hidden'); }, 500);
 }
 
 // ── RRWEB EVENT APPLICATION ────────────────────────────────────────────────

@@ -75,7 +75,7 @@ function transitionToRecording(sendStart, restoredEventCount) {
   document.getElementById('main-recording').classList.remove('hidden');
 
   document.getElementById('logo-icon').classList.add('recording');
-  document.getElementById('logo-icon').textContent = '\u23FA';
+  // logo uses the actual icon image — no textContent override needed
   document.getElementById('status-pill').textContent = 'REC';
   document.getElementById('status-pill').className = 'status-pill recording';
 
@@ -129,9 +129,13 @@ function transitionToIdle() {
 
   const icon = document.getElementById('logo-icon');
   icon.classList.remove('recording');
-  icon.textContent = '\u23FA'; // ⏺
-  icon.style.background = '';
-  icon.style.color = '';
+  // background reset handled by removing logo-icon-done class
+  // Restore logo image
+  const img = document.getElementById('logo-img');
+  if (img) img.classList.remove('logo-img-hidden');
+  const overlay = icon.querySelector('.logo-overlay');
+  if (overlay) overlay.remove();
+  icon.classList.remove('logo-icon-done');
 
   document.getElementById('status-pill').textContent = 'IDLE';
   document.getElementById('status-pill').className = 'status-pill';
@@ -150,9 +154,16 @@ function transitionToDone(eventCount) {
 
   const icon = document.getElementById('logo-icon');
   icon.classList.remove('recording');
-  icon.textContent = '\u2713'; // ✓
-  icon.style.background = 'var(--accent2)';
-  icon.style.color = '#000';
+  icon.classList.add('logo-icon-done');
+  // Show ✓ overlay over the icon image
+  const img2 = document.getElementById('logo-img');
+  if (img2) img2.classList.add('logo-img-hidden');
+  if (!icon.querySelector('.logo-overlay')) {
+    const ov = document.createElement('span');
+    ov.className = 'logo-overlay';
+    ov.textContent = '\u2713';
+    icon.appendChild(ov);
+  }
 
   document.getElementById('status-pill').textContent = 'DONE';
   document.getElementById('status-pill').className = 'status-pill done';
@@ -223,7 +234,7 @@ function updateLiveStats(eventCount) {
 function showError(msg) {
   const hint = document.querySelector('.hint');
   if (hint) {
-    hint.style.color = 'var(--danger)';
+    hint.classList.add('hint-error');
     hint.textContent = msg;
   }
 }
